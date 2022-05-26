@@ -1,20 +1,16 @@
-import base64
-import datetime
 import json
 import random
 import time
-from base64 import b64decode, b64encode
-
-import execjs
-import pyDes
 import requests
 from Crypto.Cipher import DES3
+from base64 import b64decode, b64encode
+from selenium import webdriver
 
 
 class AESCipher:
-    def __init__(self, key):
-        self.key = key
+    def __init__(self):
         self.block_size = 8
+        self.iv = time.strftime("%Y%m%d", time.localtime()).encode()
 
     def pad(self, s):
         return s + (self.block_size - len(s) % self.block_size) * chr(self.block_size - len(s) % self.block_size)
@@ -22,163 +18,112 @@ class AESCipher:
     def unpad(self, s):
         return s[:-ord(s[len(s) - 1:])]
 
-    def encrypt(self, raw, iv):
+    def encrypt(self, key, raw):
         raw = self.pad(raw)
-        cipher = DES3.new(self.key, DES3.MODE_CBC, IV=iv)
+        cipher = DES3.new(key, DES3.MODE_CBC, IV=self.iv)
         return b64encode(cipher.encrypt(raw.encode()))
 
-    def decrypt(self, enc, iv):
+    def decrypt(self, key, enc):
         enc = b64decode(enc)
-        cipher = DES3.new(self.key, DES3.MODE_CBC, iv=iv)
-        return self.unpad(cipher.decrypt(enc)).decode('utf8')
+        cipher = DES3.new(key, DES3.MODE_CBC, IV=self.iv)
+        return json.loads(self.unpad(cipher.decrypt(enc)).decode('utf-8'))
 
 
-def my_random(size):
-    str1 = ""
+def randstr(size):
     arr = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
            'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'A', 'B', 'C', 'D', 'E', 'F',
            'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
-    i = 0
-    while i < size:
-        str1 += arr[round(random.random() * (len(arr) - 1))]
-        i += 1
-    return str1
+    return "".join([random.choice(arr) for _ in range(size)])
 
 
-def strTobinary(data):
-    result = []
-    list1 = list(data)
-    i = 0
-    while i < len(list1):
-        if i != 0:
-            result.append(" ")
-        item = list1[i]
-        binaryStr = str(bin(ord(item))[2:])
-        result.append(binaryStr)
-        i += 1
-    return "".join(result)
+def str2bin(raw):
+    return " ".join([str(bin(ord(c))[2:]) for c in raw])
 
 
 def cipher():
-    date = datetime.datetime.now()
     timestamp = str(time.time()).replace('.', '')[:13]
-    salt = my_random(24)
-    year = str(date.year)
-    month = date.month
-    month = "0" + str(month) if month < 10 else str(month)
-    day = "0" + str(date.day) if date.day < 10 else str(date.day)
-
-    iv = year + month + day
-    enc = AESCipher(salt)
-    enc = enc.encrypt(timestamp, iv=iv.encode()).decode()
+    salt = randstr(24)
+    iv = time.strftime("%Y%m%d", time.localtime())
+    enc = AESCipher().encrypt(salt, timestamp).decode()
     str1 = salt + iv + enc
-    ciphertext = strTobinary(str1)
-    return ciphertext
+    return str2bin(str1)
 
 
 def uuid():
-    guid = ""
-    i = 1
-    while i <= 32:
-        n = str(hex(int(random.random() * 16.0))).replace('0x', '')
-        guid += n
-        i += 1
-    return guid
+    arr = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+    return "".join([random.choice(arr) for _ in range(32)])
 
 
-def send_request(url, headers, ws_params):
-    sess = requests.session()
-    req = sess.post(url=url, headers=headers, data=ws_params)
+def _post(sess, url, params, headers):
+    req = sess.post(url=url, data=params, headers=headers)
     assert req.status_code == 200
     return req.json()
 
 
-def decrypt(data, secretkey):
-    iv = time.strftime("%Y%m%d", time.localtime())
-    des_obj = pyDes.triple_des(key=secretkey, IV=iv, padmode=pyDes.PAD_PKCS5, mode=pyDes.CBC)
-    decodebs64data = base64.b64decode(data)
-    s = des_obj.decrypt(decodebs64data).decode('utf-8')
-    x = json.loads(s)
-    return x
+class WenShu:
+    def __init__(self, ua):
+        # 账号, 密码
+        self.user = "18810721592"
+        self.passwd = "Abc#123456"
+        # Driver params
+        self.driver_path = 'driver/chromedriver.exe'
+        # 1）修改UA, 确保与之后请求的UA一致（只有UA一致session才有效）; 2）让浏览器不显示自动化测试
+        options = webdriver.ChromeOptions()
+        options.add_argument(f"User-Agent={ua}")
+        options.add_argument('disable-infobars')
+        self.driver = webdriver.Chrome(executable_path=self.driver_path, options=options)
+        # Url & Element params
+        self.login_url = 'https://wenshuapp.court.gov.cn/website/wenshu/181010CARHS5BS3C/index.html?open=login'
+        self.user_input_xpath = '//*[@id="root"]/div/form/div/div[1]/div/div/div/input'
+        self.pass_input_xpath = '//*[@id="root"]/div/form/div/div[2]/div/div/div/input'
+        self.submit_btn_xpath = '//*[@id="root"]/div/form/div/div[3]/span'
+        # Cookies
+        self.cookie_text = ""
 
-
-def getEncryptKey(password):
-    file = "cpws_login.js"
-    ctx = execjs.compile(open(file, encoding="utf-8").read())
-    js = 'getpwd("{password}")'.format(password=password)
-    encrypt_key = ctx.eval(js)
-    return encrypt_key
+    def auto_login(self):
+        # 模拟登录，获得Cookie
+        self.driver.get(self.login_url)
+        self.driver.implicitly_wait(10)
+        # 最大化浏览器
+        self.driver.maximize_window()
+        # 因为登录框在iframe框中，需要先切换到iframe中
+        self.driver.switch_to.frame('contentIframe')
+        self.driver.find_element_by_xpath(self.user_input_xpath).send_keys(self.user)
+        self.driver.find_element_by_xpath(self.pass_input_xpath).send_keys(self.passwd)
+        # time.sleep(1)
+        self.driver.find_element_by_xpath(self.submit_btn_xpath).click()
+        time.sleep(5)
+        # 拿到cookie, 并转换为字符串
+        cookies = self.driver.get_cookies()
+        self.cookie_text = ''.join([f"{cookie['name']}={cookie['value']}; " for cookie in cookies])
+        assert "SESSION=" in self.cookie_text
+        # 退出selenium浏览器自动化
+        self.driver.quit()
+        return self.cookie_text
 
 
 if __name__ == '__main__':
-    # 通过登录拿到Cookie, 放到headers里
-    # wenshu = wenshu()
-    # # 获取登陆后的Cookie
-    # cookies = wenshu.send_login()
-    # # 将cookie转换为字符串
-    # json_cookie = ''
-    # for cookie in cookies:
-    #     name = cookie['name']
-    #     value = cookie['value']
-    #     json_cookie += name + '=' + value + '; '
-    # # 退出selenium浏览器自动化
-    # # wenshu.chrome.quit()
-    # print(json_cookie)
-
-    # 账号, 密码
-    # username = "18810721592"
-    # password = "Abc#123456"
-    # cpws_heardes = {
-    #     "Accept": "*/*",
-    #     "Accept-Encoding": "gzip, deflate, br",
-    #     "Accept-Language": "en",
-    #     "Connection": "keep-alive",
-    #     "Content-Length": "440",
-    #     "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-    #     "Host": "account.court.gov.cn",
-    #     "Origin": "https://account.court.gov.cn",
-    #     "Pragma": "no-cache",
-    #     "Referer": "https://account.court.gov.cn/app?back_url=https%3A%2F%2Faccount.court.gov.cn%2Foauth%2Fauthorize%3Fresponse_type%3Dcode%26client_id%3Dzgcpwsw%26redirect_uri%3Dhttps%253A%252F%252Fwenshu.court.gov.cn%252FCallBackController%252FauthorizeCallBack%26state%3Df22de1f8-408a-486c-bef1-0535fd5d7cb7%26timestamp%3D1633526741958%26signature%3D5A8EE0767D10C2D7AF05B5389678D74A3B2478245776F5E8BCC119E401FC9633%26scope%3Duserinfo",
-    #     'User-Agent': 'Mozilla/5.0 (iPhone; CPU OS 10_15_5 (Ergänzendes Update) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Mobile/14E304 Safari/605.1.15',
-    #     "X-Requested-With": "XMLHttpRequest"
-    # }
-    main_headers = {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU OS 10_15_5 (Ergänzendes Update) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Mobile/14E304 Safari/605.1.15',
-        # 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.4951.67 Safari/537.36',
-        # 'Host': 'wenshuapp.court.gov.cn',
-        # 'Origin': 'https://wenshuapp.court.gov.cn',
-        # 'sec-ch-ua': 'Google Chrome";v="89", "Chromium";v="89", ";Not A Brand";v="99',
-        # 'Referer': f'Referer: https://wenshuapp.court.gov.cn/website/wenshu/181217BMTKHNT2W0/index.html?pageId={pageId}',
-        # 'Accept': '*/*',
-        # 'Accept-Encoding': 'gzip, deflate, br',
-        # 'Accept-Language': 'zh-CN,zh;q=0.9',
-        # 'Connection': 'keep-alive',
+    # 公共请求头
+    headers = {
+        # 'User-Agent': 'Mozilla/5.0 (iPhone; CPU OS 10_15_5 (Ergänzendes Update) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.1 Mobile/14E304 Safari/605.1.15',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SAMSUNG-SM-T377A Build/NMF26X) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Mobile Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Cookie': 'SESSION=82a2df37-87ad-41ce-a225-f66ccc30f776',
-        # '; wzws_cid=f4e3042d4574e0f94aa94c62f3afddbb958792ec770a7372b43149fc4bc2896818ee2b95d2c3bb17884c3f89127ec1ecca53041a401d15acb11f8b1008f097182e735de9c95d379ccc1187e1b5f1ae10'
+        # 'Cookie': 'SESSION=2c32f77e-b4d4-4719-aeb0-398c90c9d32a',
     }
 
-    # 返回操作成功即登录成功
-    # session = requests.Session()
-    # login_url = "https://account.court.gov.cn/api/login"
-    # data = {
-    #     "username": username,
-    #     "password": getEncryptKey(password),
-    #     "appDomain": "wenshu.court.gov.cn"
-    # }
-    # response = session.post(url=login_url, data=data, headers=cpws_heardes)
-    # print(response.text)
-    # print(session.cookies.get_dict())
-    # main_url = "https://wenshuapp.court.gov.cn/website/wenshu/181029CR4M5A62CH/index.html?#"
-    # main_response = session.get(url=main_url, headers=main_headers)
-    # print(main_response.text)
+    # 获取登陆后的Cookie
+    cookie_text = WenShu(headers["User-Agent"]).auto_login()
+    print(cookie_text)
 
-    # 构造POST请求参数, 编写逻辑来自逆向JS
+    # 构造POST请求参数, 编写逻辑来自对JS的逆向工程
     # 模拟生成pageId, ciphertext, __RequestVerificationToken
-    url = "https://wenshuapp.court.gov.cn/website/parse/rest.q4w"
+    api_url = "https://wenshuapp.court.gov.cn/website/parse/rest.q4w"
     pageId = uuid()
     ciphertext = cipher()
-    verification_token = my_random(24)
+    verification_token = randstr(24)
+    # headers["Cookie"] = "SESSION=2ded3315-28ef-48fd-9697-cf97053c9902; "
+    headers['Cookie'] = cookie_text
+    session = requests.Session()
 
     # 列表爬虫
     list_params = {
@@ -193,11 +138,10 @@ if __name__ == '__main__':
         '__RequestVerificationToken': verification_token,
     }
     # 发送请求, 拿到返回结果
-    data = send_request(url, main_headers, list_params)
-    print(data)
+    data = _post(session, api_url, list_params, headers)
     assert data["code"] == 1
     # 解密返回结果
-    res = decrypt(data["result"], data["secretKey"])
+    res = AESCipher().decrypt(data["secretKey"], data["result"])
     print(json.dumps(res, indent=4, ensure_ascii=False))
 
     # 正文爬虫
@@ -211,9 +155,8 @@ if __name__ == '__main__':
         '__RequestVerificationToken': verification_token,
     }
     # 发送请求, 拿到返回结果
-    data = send_request(url, main_headers, doc_params)
-    print(data)
+    data = _post(session, api_url, doc_params, headers)
     assert data["code"] == 1
     # 解密返回结果
-    res = decrypt(data["result"], data["secretKey"])
+    res = AESCipher().decrypt(data["secretKey"], data["result"])
     print(json.dumps(res, indent=4, ensure_ascii=False))

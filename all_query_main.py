@@ -127,6 +127,7 @@ def get_month(): #北京的是从10年开始，其他市的法院不确定
         now=str(j) if j>=10 else "0"+str(j)
         next=str(j+1) if j+1>=10 else "0"+str(j+1)
         month.append("{}-{}-02 TO {}-{}-01".format(i,now,i,next))
+    month.append("2010-01-01 TO 2010-01-01")
     return month
 """
 def get_province_name(url,pageId,main_headers,verification_token):

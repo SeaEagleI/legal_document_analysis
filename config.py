@@ -6,3 +6,11 @@ username = "18810721592"
 password = "Abc#123456"
 driver_path = "driver/chromedriver.exe"
 headers_path = "cache/headers.json"
+lock_path = "cache/lock"
+log_path = "log/log.txt"
+court_path = "data/court.json"
+query_length_path = "data/query_length.json"
+doc_index_path = "data/doc_index.json"
+result_path = "data/result.json"
+# TODO LIST: 创建所有文件夹（cache, data）
+# TODO LIST: 编写Config类并整理所有变量, 将Config类作为Crawler的init参数

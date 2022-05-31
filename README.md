@@ -11,7 +11,7 @@
 ### api网址
 - https://github.com/yeyeye777/wenshu_spider
 
-### selenium获得cookie
+### 通过selenium获得cookie
 - https://www.whcsrl.com/blog/1017807
 - https://gitee.com/Lyong9102/cp_wenshu
 

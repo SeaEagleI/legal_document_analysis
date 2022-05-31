@@ -2,7 +2,11 @@
 
 对裁判文书网上所有行政诉讼文件进行抓取和挖掘分析
 
-## 参考
+## Analysis
+- 字段解析报告：https://a0o09b6l6h.feishu.cn/docs/doccntph0MBUMJCqN4odgof45kd
+- 存放数据集及过程文件的共享文件夹：https://kdocs.cn/join/gt7f0jp
+
+## References
 
 ### api网址
 - https://github.com/yeyeye777/wenshu_spider

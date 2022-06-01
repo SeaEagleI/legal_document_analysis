@@ -18,7 +18,6 @@
 ## 参考
 
 - https://github.com/yeyeye777/wenshu_spider (api网址)
-- https://www.whcsrl.com/blog/1017807 (模拟生成cookie)
 - https://gitee.com/Lyong9102/cp_wenshu (模拟生成cookie、逆向js)
 - https://blog.csdn.net/feilong_86/article/details/102620316 (逆向js)
 - https://blog.csdn.net/weixin_47345503/article/details/118554613 (逆向js)

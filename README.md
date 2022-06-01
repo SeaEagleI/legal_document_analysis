@@ -1,9 +1,10 @@
-# Judicial Document Analysis
+# 行政文书挖掘与分析
 
 对裁判文书网上所有行政诉讼文件进行抓取和挖掘分析
 
 ## 数据爬取
-- 目前爬取了2989757条文书正文数据，json文件大小约21.5G，最新代码和数据都在服务器上
+- 目前爬取了2989757条文书正文数据，json文件大小约21.5G（截至2022-06-01 00:00）
+- 最新代码和数据都在服务器上
 - 字段解析报告：https://a0o09b6l6h.feishu.cn/docs/doccntph0MBUMJCqN4odgof45kd
 
 ## 下一步工作
@@ -14,7 +15,7 @@
 - 对某个特定方向的案例研究（如教育问题、医患纠纷、彩礼纠纷）
 - 其他可能的问题
 
-## References
+## 参考
 
 ### api网址
 - https://github.com/yeyeye777/wenshu_spider

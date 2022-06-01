@@ -1,4 +1,4 @@
-import pickle
+import re
 import math
 import random
 import time
@@ -11,20 +11,21 @@ from typing import Dict, Any, List
 from datetime import timedelta, datetime as dt
 from selenium import webdriver
 from tqdm import trange, tqdm
-from config import ua_list, username, password, driver_path, headers_path, court_path, doc_index_path, query_length_path, \
-    result_path, lock_path
+from config import Config
 from utils import DES3_Cracker, uuid, cipher, rand_str, load_data, dump_data
 
 
 # 裁判文书网自动化爬虫, 支持多进程爬取
 class WenShuCrawler:
-    def __init__(self):
+    def __init__(self, config: Config):
+        # Config file
+        self.args = config
         # Common headers, Cookies (支持缓存)
-        if op.exists(headers_path):
-            self.headers = load_data(headers_path)
+        if op.exists(self.args.headers_path):
+            self.headers = load_data(self.args.headers_path)
             self.user_agent = self.headers["User-Agent"]
         else:
-            self.user_agent = random.choice(ua_list)
+            self.user_agent = random.choice(self.args.ua_list)
             self.headers = {
                 'User-Agent': self.user_agent,
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -70,39 +71,43 @@ class WenShuCrawler:
         self.key4 = "s7"  # case_no
         self.date_tplt = "%Y-%m-%d"
         # Crawler Part: general config
-        # self.crawl_unit = 25  # 极限大小, 速度最快; 需要是1000的因子, 否则遇到长度为1k的query在请求最后一页时会得到空结果
+        # self.crawl_unit = 25  # 极限大小, 速度最快; unit需要是1000的因子, 否则遇到长度为1k的query在请求最后一页时会得到空结果
+        self.use_cache = self.args.use_cache
         self.crawl_units = [150, 125, 100, 50, 25, 10]  # 动态unit机制: 优先使用最大unit(最快), 出现错误再逐步下调unit
         self.crawl_limit = 1000  # 每种条件组合的返回结果上限
-        self.use_cache = True  # TODO LIST: set to Config.use_cache
-        self.mproc = True  # 默认在四个主要时间瓶颈任务上使用多进程并行实现
-        # self.queue = None
-        self.num_workers = 25
+        self.max_retry = 5
+        # Multi-Proc Part: 默认在四个主要时间瓶颈任务上使用多进程并行实现
+        self.num_workers = self.args.num_workers
         self.num_queries = -1
         self.num_docs = -1
         self.proc_unit = -1
+        self.do_split = self.args.do_split  # 结果太大, 默认分块保存, 最后再合并
 
         # Initialize Crawler
-        if not op.exists(headers_path):
+        if not op.exists(self.args.headers_path):
             self.update_cookie()
-        if op.exists(lock_path):
-            os.remove(lock_path)
-        # Result data
-        # self.court_names = []
-        # self.length_list_2 = []
-        # self.doc_index_list = []
-        # self.doc_dict = {}
+        if op.exists(self.args.lock_path):
+            os.remove(self.args.lock_path)
+        # Result data: 不在成员变量中存储结果数据, 节约并行开销
+        # Preprocess
+        self.repl_dict = {
+            "<.*?>": "\n",
+            " +": "",
+            "\n+": "\n",
+            "^\n|\n$": "",
+        }
 
     # 用driver模拟登录, 实现Cookie更新
     def update_cookie(self):
-        self.driver = webdriver.Chrome(driver_path, options=self.options)
+        self.driver = webdriver.Chrome(self.args.driver_path, options=self.options)
         # 打开登录页面
         self.driver.get(self.login_url)
         self.driver.implicitly_wait(10)
         self.driver.maximize_window()  # 最大化浏览器
         # 切换到iframe登录框, 输入用户名和密码后提交
         self.driver.switch_to.frame('contentIframe')
-        self.driver.find_element_by_xpath(self.user_input_xpath).send_keys(username)
-        self.driver.find_element_by_xpath(self.pass_input_xpath).send_keys(password)
+        self.driver.find_element_by_xpath(self.user_input_xpath).send_keys(self.args.username)
+        self.driver.find_element_by_xpath(self.pass_input_xpath).send_keys(self.args.password)
         self.driver.find_element_by_xpath(self.submit_btn_xpath).click()
         time.sleep(3)
         # 更新cookie并写入缓存
@@ -110,7 +115,7 @@ class WenShuCrawler:
         cookie_text = ''.join([f"{cookie['name']}={cookie['value']}; " for cookie in cookies])
         assert "SESSION=" in cookie_text
         self.headers["Cookie"] = cookie_text
-        dump_data(self.headers, headers_path)
+        dump_data(self.headers, self.args.headers_path)
         print(f"Updated Cookie: {cookie_text}")
         # 退出selenium浏览器自动化
         self.driver.quit()
@@ -122,16 +127,16 @@ class WenShuCrawler:
             if data["code"] != -1:
                 # 引入互斥锁文件, 为update_cookie函数上锁
                 loop_cnt = 0
-                while op.exists(lock_path):  # 段1
+                while op.exists(self.args.lock_path):  # 段1
                     loop_cnt += 1
                     time.sleep(1)
                 if loop_cnt:  # 段2
                     data["code"] = -1
-                    self.headers = load_data(headers_path)  # 成员变量在多进程中不会同步, 需要手动更新
+                    self.headers = load_data(self.args.headers_path)  # 成员变量在多进程中不会同步, 需要手动更新
                     continue
-                open(lock_path, "w+").write("")  # 段3: 假设段2和段3执行足够快, 则不会有两个进程同时越过段1（实验表明假设满足90%的情况）
+                open(self.args.lock_path, "w+").write("")  # 段3: 假设段2和段3执行足够快, 则不会有两个进程同时越过段1（实验表明假设满足90%的情况）
                 self.update_cookie()
-                os.remove(lock_path)
+                os.remove(self.args.lock_path)
             req = self.session.post(self.api_url, data=params, headers=self.headers)  # "headers="不能省略
             assert req.status_code == 200
             data = req.json()
@@ -143,8 +148,8 @@ class WenShuCrawler:
 
     # 法院列表爬虫
     def court_list_crawler(self):
-        if self.use_cache and op.exists(court_path):
-            return load_data(court_path)
+        if self.use_cache and op.exists(self.args.court_path):
+            return load_data(self.args.court_path)
         params = {
             'provinceCode': '',  # 上级法院编号
             'searchParent': 'true',
@@ -173,7 +178,7 @@ class WenShuCrawler:
                     if primary_court['id'] == inter_court['id']:
                         continue
                     court_list.append(primary_court)
-        dump_data(court_list, court_path)
+        dump_data(court_list, self.args.court_path)
         return court_list
 
     # crawl a fixed number of docIds
@@ -211,6 +216,7 @@ class WenShuCrawler:
         return results
 
     # crawl detailed article via docId
+    # 加入对无法获取的异常文件的处理（获取极少数文件的正文时会持续返回InvalidChunkLength Error, 比如文件"1c9e6f351f8a4d9ca96dab3300909564"）
     def detail_crawler(self, doc_id: str):
         params = {
             'docId': doc_id,  # "a8f0be8fe8914c29a7d2ad53000b03f6"
@@ -219,8 +225,17 @@ class WenShuCrawler:
             '__RequestVerificationToken': self.verification_token,
         }
         # 发送请求, 拿到返回结果并解密
-        data = self.post(params)
-        return self.cracker.decrypt(data["secretKey"], data["result"])
+        try_count, error = 0, None
+        while try_count <= self.max_retry:
+            try_count += 1
+            try:
+                data = self.post(params)
+                return self.cracker.decrypt(data["secretKey"], data["result"])
+            except Exception as exp:
+                time.sleep(1)
+                error = exp
+        print(f"\nError: {doc_id}\t{error}")
+        return None
 
     # 对给定条件组合下指定字段进行值计数 (年份/关键字/文书类型)
     def update_field_count(self, add_query: Dict[str, str], count_field: str):
@@ -245,11 +260,14 @@ class WenShuCrawler:
         data = self.once_doc_list_crawler(query_text)
         return data["queryResult"]["resultCount"]
 
-    # 预处理: 将正文爬虫结果中的docId抽出, 并去除无用字段
+    # 预处理: 将正文爬虫结果中的docId抽出, 去除无用字段和qwContent值中的HTML标签
     def pro(self, raw: Dict[str, str]):
         res_dict, new = {}, {}
         for k, v in raw.items():
             if v and k != "s5":
+                if k == "qwContent":
+                    for s, repl in self.repl_dict.items():
+                        v = re.sub(s, repl, v)
                 new[k] = v
         res_dict[raw["s5"]] = new
         return res_dict
@@ -295,6 +313,7 @@ class WenShuCrawler:
         return length_list
 
     # Coarse-grained Scheduler to balance payload among processes
+    # 性能：在proc_len上实现了较好的平衡, 但未考虑query数的影响, 靠后分配的proc的query数会非常多; 较适合本文这种query对爬取时间影响不大的情况
     def scheduler(self, length_list: List[List[Any]]):
         total_count = self.update_total_count({})
         query_list = [x for x, _ in length_list]
@@ -366,7 +385,7 @@ class WenShuCrawler:
               .format(pid, len(proc_query_list), len(proc_length_list), proc_total_docs, proc_total_loss))
         return proc_length_list
 
-    # Main Proc: Crawl docId list & basic info
+    # Main Proc: Crawl docId list
     def proc_doc_list_crawler(self, proc_query_list: List[List[Any]], proc_total_docs: int, pid: int = 0, queue=None):
         # Patterns: Σ$query_total_docs == $proc_total_docs, no replications in api data
         start_t, total_cnt, repl_cnt, proc_doc_indices = time.perf_counter(), 0, 0, []
@@ -400,114 +419,150 @@ class WenShuCrawler:
     def proc_detail_crawler(self, doc_id_list: List[str], pid: int = 0, queue=None):
         proc_doc_dict = {}
         for doc_id in doc_id_list:
-            detail_data = self.pro(self.detail_crawler(doc_id))
-            proc_doc_dict.update(detail_data)
+            detail_data = self.detail_crawler(doc_id)
+            if detail_data is None:  # 处理异常
+                if queue is not None:
+                    queue.put(None)
+                continue
+            pro_data = self.pro(detail_data)
+            proc_doc_dict.update(pro_data)
             if queue is not None:
-                queue.put(detail_data)
+                queue.put(pro_data)
+        if self.do_split:
+            data_path = self.args.proc_result_path.format(pid)
+            dump_data(proc_doc_dict, data_path)
+            print("\nEND Proc {}, Saved {} Docs to {}".format(pid, len(proc_doc_dict), data_path))
+        else:
+            print("\nEND Proc {}, GOT {} Docs".format(pid, len(proc_doc_dict)))
         return proc_doc_dict
+
+    # Merge Split Results
+    def merge_results(self, prev_num_workers, num_docs):
+        doc_dict = {}
+        for pid in trange(prev_num_workers, desc="Load Split Results"):
+            split_data = load_data(self.args.proc_result_path.format(pid))
+            doc_dict.update(split_data)
+        print("GOT {}/{} Doc Details, Lost {}".format(len(doc_dict), num_docs, num_docs - len(doc_dict)))
+        dump_data(doc_dict, self.args.result_path)
+        return doc_dict  # 返回结果
 
     # Multi-Process Controller
     def run_crawler(self):
         # 爬取法院列表
         court_names = [court["name"] for court in self.court_list_crawler()]
         # 爬取文书信息
-        doc_dict = {}
-        if self.use_cache and op.exists(result_path):
-            doc_dict = load_data(result_path)
+        if self.use_cache and op.exists(self.args.result_path):
+                return load_data(self.args.result_path)
+        doc_index_list = []
+        if self.use_cache and op.exists(self.args.doc_index_path):
+            doc_index_list = load_data(self.args.doc_index_path)
         else:
-            doc_index_list = []
-            if self.use_cache and op.exists(doc_index_path):
-                doc_index_list = load_data(doc_index_path)
+            # 生成组合条件, 并进行三轮粗粒度调度
+            # sample query: {"s2": "北京市高级人民法院", "cprq": "2021-05-01 TO 2021-06-01"}
+            if self.use_cache and op.exists(self.args.query_length_path):
+                length_list_2 = load_data(self.args.query_length_path)
             else:
-                # 生成组合条件, 并进行三轮粗粒度调度
-                # sample query: {"s2": "北京市高级人民法院", "cprq": "2021-05-01 TO 2021-06-01"}
-                if self.use_cache and op.exists(query_length_path):
-                    length_list_2 = load_data(query_length_path)
-                else:
-                    # Stage I: Schedule + Multi-Proc
-                    length_list = []
-                    self.num_queries = len(court_names)
-                    self.proc_unit = math.ceil(self.num_queries / self.num_workers)
-                    print(f"[MP Stage I] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
-                    q = multiprocessing.Queue()
-                    for pid in range(self.num_workers):
-                        proc_court_names = court_names[self.proc_unit * pid: self.proc_unit * (pid + 1)]
-                        p = multiprocessing.Process(target=self.proc_counter, args=(proc_court_names, pid, q))
-                        p.start()
-                    for _ in trange(self.num_queries, desc="Count LV1 Queries"):
-                        proc_data = q.get()
-                        length_list += proc_data
-                    print("Counted {} courts".format(len(length_list)))
-                    # Stage I: Split
-                    length_list_1, length_list_2 = [], []
-                    for query, total_count in length_list:
-                        if total_count <= self.crawl_limit:
-                            if total_count:
-                                length_list_2 += [[query, total_count]]
-                            continue
-                        else:
-                            length_list_1 += [[query, total_count]]
-                    # Stage II: Schedule + Multi-Proc
-                    self.num_queries = len(length_list_1)
-                    schedule_list, proc_lens = self.scheduler(length_list_1)
-                    print(f"[MP Stage II] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
-                    q = multiprocessing.Queue()
-                    for pid in range(self.num_workers):
-                        p = multiprocessing.Process(target=self.proc_query_generator,
-                                                    args=(schedule_list[pid], proc_lens[pid], pid, q))
-                        p.start()
-                    for _ in trange(self.num_queries, desc="Split LV2+ Queries"):
-                        proc_data = q.get()
-                        length_list_2 += proc_data
-                    total_count = self.update_total_count({})
-                    sum_query_count = sum(x[1] for x in length_list_2)
-                    print("GOT {}/{}, Lost {}, Split Queries {}/{} -> {}".
-                          format(sum_query_count, total_count, total_count - sum_query_count,
-                                 len(length_list_1), len(length_list), len(length_list_2)))
-                    dump_data(length_list_2, query_length_path)
-                    # GOT 3063303, Lost 2311/3065614, Split Queries 848/3531 -> 6540 in Stage II, 2022-05-31 21:00
-
-                # Stage III: Schedule + Multi-Proc （爬取文书列表）
-                # TODO LIST: 重复性问题原因判定: 真重复还是假重复 （同id对应的是同一个文书吗？不同法院？）
-                self.num_queries = len(length_list_2)
-                schedule_list, proc_lens = self.scheduler(length_list_2)
-                print(f"[MP Stage III] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
+                # TODO LIST: 拆分损失评估, 为何会造成76k的拆分损失，能否弄到一个域外数据？从而改进拆分减小损失？
+                # Stage I: Schedule + Multi-Proc
+                length_list = []
+                self.num_queries = len(court_names)
+                self.proc_unit = math.ceil(self.num_queries / self.num_workers)
+                print(f"[MP Stage I] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
                 q = multiprocessing.Queue()
                 for pid in range(self.num_workers):
-                    p = multiprocessing.Process(target=self.proc_doc_list_crawler,
+                    proc_court_names = court_names[self.proc_unit * pid: self.proc_unit * (pid + 1)]
+                    p = multiprocessing.Process(target=self.proc_counter, args=(proc_court_names, pid, q))
+                    p.start()
+                for _ in trange(self.num_queries, desc="Count LV1 Queries"):
+                    proc_data = q.get()
+                    length_list += proc_data
+                print("Counted {} courts".format(len(length_list)))
+                # Stage I: Split
+                length_list_1, length_list_2 = [], []
+                for query, total_count in length_list:
+                    if total_count <= self.crawl_limit:
+                        if total_count:
+                            length_list_2 += [[query, total_count]]
+                        continue
+                    else:
+                        length_list_1 += [[query, total_count]]
+                # Stage II: Schedule + Multi-Proc
+                self.num_queries = len(length_list_1)
+                schedule_list, proc_lens = self.scheduler(length_list_1)
+                print(f"[MP Stage II] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
+                q = multiprocessing.Queue()
+                for pid in range(self.num_workers):
+                    p = multiprocessing.Process(target=self.proc_query_generator,
                                                 args=(schedule_list[pid], proc_lens[pid], pid, q))
                     p.start()
-                for _ in trange(self.num_queries, desc="Crawl Doc Indices"):
+                for _ in trange(self.num_queries, desc="Split LV2+ Queries"):
                     proc_data = q.get()
-                    doc_index_list += proc_data
-                raw_num_docs = len(doc_index_list)
-                doc_index_list = list(set(doc_index_list))
-                num_docs = len(doc_index_list)
-                print("GOT {}/{} Doc Indices, Repl {}".format(num_docs, raw_num_docs, raw_num_docs - num_docs))
-                dump_data(doc_index_list, doc_index_path)
-                # GOT 2989757/3063303 Doc Indices, Repl 73546 in Stage III, 2022-05-31 21:00
+                    length_list_2 += proc_data
+                total_count = self.update_total_count({})
+                sum_query_count = sum(x[1] for x in length_list_2)
+                print("GOT {}/{}, Lost {}, Split Queries {}/{} -> {}".
+                      format(sum_query_count, total_count, total_count - sum_query_count,
+                             len(length_list_1), len(length_list), len(length_list_2)))
+                dump_data(length_list_2, self.args.query_length_path)
+                # GOT 3063303, Lost 2311/3065614, Split Queries 848/3531 -> 6540 in Stage II, 2022-05-31 21:00
 
-            # Stage IV: Schedule + Multi-Proc （爬取文书正文）
-            # TODO LIST: 结果数据分块存储
-            # TODO LIST: 检测其在服务器上能否运行
-            self.num_docs = len(doc_index_list)
-            self.proc_unit = math.ceil(self.num_docs / self.num_workers)
-            print(f"[MP Stage IV] Workers: {self.num_workers}, Unit: {self.proc_unit}, Docs: {self.num_docs}")
+            # Stage III: Schedule + Multi-Proc （爬取文书列表）
+            # 数据重复性: 1）s2字段本身存在值重复, 如"新绛县人民法院"和"绛县人民法院";
+            #           2）同一文书同时出现在多个法院的检索结果中（文书6581ace6b24749cf9ffdad1201855f28同时出现在"洪洞县人民法院"和"新绛县人民法院"的结果中）
+            self.num_queries = len(length_list_2)
+            schedule_list, proc_lens = self.scheduler(length_list_2)
+            print(f"[MP Stage III] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
             q = multiprocessing.Queue()
             for pid in range(self.num_workers):
-                proc_doc_indices = doc_index_list[self.proc_unit * pid: self.proc_unit * (pid + 1)]
-                p = multiprocessing.Process(target=self.proc_detail_crawler, args=(proc_doc_indices, pid, q))
+                p = multiprocessing.Process(target=self.proc_doc_list_crawler,
+                                            args=(schedule_list[pid], proc_lens[pid], pid, q))
                 p.start()
-            for _ in trange(self.num_docs, desc="Crawl/Merge Doc Details"):
-                detail_data = q.get()
-                doc_dict.update(detail_data)
-            print("GOT {} Doc Details".format(len(doc_dict)))
-            dump_data(doc_dict, result_path)
+            for _ in trange(self.num_queries, desc="Crawl Doc Indices"):
+                proc_data = q.get()
+                doc_index_list += proc_data
+            raw_num_docs = len(doc_index_list)
+            doc_index_list = list(set(doc_index_list))
+            num_docs = len(doc_index_list)
+            print("GOT {}/{} Doc Indices, Repl {}".format(num_docs, raw_num_docs, raw_num_docs - num_docs))
+            dump_data(doc_index_list, self.args.doc_index_path)
+            # GOT 2989757/3063303 Doc Indices, Repl 73546 in Stage III, 2022-05-31 21:00
 
-        # 返回结果
-        return doc_dict
+        # 加载前分块结果（如果有）
+        self.num_docs = len(doc_index_list)
+        if self.use_cache:
+            split_files = sorted(os.listdir(self.args.split_dir), key=lambda x: int(re.findall(r'\d+', x)[0]))
+            if split_files:
+                assert len(split_files) == int(re.findall(r'\d+', split_files[-1])[0]) + 1  # 检查是否有文件缺失
+                return self.merge_results(len(split_files), self.num_docs)
+
+        # Stage IV: Schedule + Multi-Proc （爬取文书正文）
+        # 防止结果太大存不下, 采用分块存储, 最后再合并
+        # 可先在本地重置headers, 然后在服务器上运行（服务器上无UI, 不能开selenium登录; 但可以开到80个进程, 速度≈300/s, 约2.9h爬完3M条）
+        # 部分文件无法获取: 获取极少数文件的正文时会持续返回InvalidChunkLength Error, 比如文件"1c9e6f351f8a4d9ca96dab3300909564"
+        self.proc_unit = math.ceil(self.num_docs / self.num_workers)
+        print(f"[MP Stage IV] Workers: {self.num_workers}, Unit: {self.proc_unit}, Docs: {self.num_docs}")
+        q = multiprocessing.Queue()
+        for pid in range(self.num_workers):
+            proc_doc_indices = doc_index_list[self.proc_unit * pid: self.proc_unit * (pid + 1)]
+            p = multiprocessing.Process(target=self.proc_detail_crawler, args=(proc_doc_indices, pid, q))
+            p.start()
+        if self.do_split:
+            for _ in trange(self.num_docs, desc="Crawl Doc Details"):
+                __ = q.get()
+            return None
+        else:
+            doc_dict = {}
+            for _ in trange(self.num_docs, desc="Crawl Doc Details"):
+                detail_data = q.get()
+                if detail_data is not None:
+                    doc_dict.update(detail_data)
+            print("GOT {}/{} Doc Details, Lost {}".format(len(doc_dict), self.num_docs, self.num_docs - len(doc_dict)))
+            dump_data(doc_dict, self.args.result_path)
+            return doc_dict  # 返回结果
+            # GOT 2989754/2989757 Doc Details, Lost 3 in Stage IV, 2022-06-01 05:00
 
 
 if __name__ == '__main__':
-    crawler = WenShuCrawler()
+    args = Config()
+    crawler = WenShuCrawler(args)
     crawler.run_crawler()

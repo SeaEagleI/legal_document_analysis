@@ -25,6 +25,8 @@ class Config:
         self.cache_dir = "cache"
         self.data_dir = "data"
         self.split_dir = op.join(self.data_dir, "split")
+        self.sup_dir = op.join(self.data_dir, "supplement")
+        self.pro_dir = op.join(self.data_dir, "processed")
         # driver file
         self.driver_path = op.join(self.driver_dir, "chromedriver.exe")
         # cache files
@@ -34,11 +36,14 @@ class Config:
         self.court_path = op.join(self.data_dir, "court.json")  # Stage 0
         self.query_length_path = op.join(self.data_dir, "query_length.json")  # Stage II
         self.doc_index_path = op.join(self.data_dir, "doc_index.json")  # Stage III
-        self.proc_result_path = op.join(self.split_dir, "result_{}.json")  # Stage IV
-        self.result_path = op.join(self.data_dir, "result.json")  # Stage IV
+        self.basic_result_path = op.join(self.data_dir, "basic_info.json")  # Stage III
+        self.split_result_path = op.join(self.split_dir, "detail_{}.json")  # Stage IV
+        self.sup_result_path = op.join(self.sup_dir, "detail_{}.json")  # Stage V
+        self.result_path = op.join(self.data_dir, "detail_info.json")  # Stage IV
+        self.processed_path = op.join(self.pro_dir, "processed.json")  # Stage VI
 
         # 文件检查和预创建（不检查driver文件夹）
-        folders = [self.cache_dir, self.data_dir, self.split_dir]
+        folders = [v for k, v in self.__dict__.items() if k.endswith("_dir") and "driver" not in k]
         for folder in folders:
             if not op.exists(folder):
                 os.makedirs(folder)

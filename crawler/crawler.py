@@ -12,10 +12,10 @@ from datetime import timedelta, datetime as dt
 from selenium import webdriver
 from tqdm import trange, tqdm
 from config import Config
-from utils import DES3_Cracker, uuid, cipher, rand_str, load_data, dump_data
+from utils import Cracker, load_data, dump_data
 
 
-# 裁判文书网自动化爬虫, 支持多进程爬取
+# 裁判文书网自动化爬虫, 支持多进程爬取 (2022-06-01)
 class WenShuCrawler:
     def __init__(self, config: Config):
         # Config file
@@ -47,10 +47,10 @@ class WenShuCrawler:
         self.api_url = "https://wenshuapp.court.gov.cn/website/parse/rest.q4w"
         self.session = requests.Session()
         # Crawler Part: common post params
-        self.pageId = uuid()
-        self.ciphertext = cipher()
-        self.verification_token = rand_str()
-        self.cracker = DES3_Cracker()
+        self.cracker = Cracker()
+        self.pageId = self.cracker.uuid()
+        self.ciphertext = self.cracker.cipher()
+        self.verification_token = self.cracker.rand_str()
         # Crawler Part: query config
         self.base_query = {"key": "s8", "value": "04"}  # 行政诉讼案件
         self.desc2key = {  # 候选分流字段, 用于进行值统计
@@ -261,16 +261,15 @@ class WenShuCrawler:
         return data["queryResult"]["resultCount"]
 
     # 预处理: 将正文爬虫结果中的docId抽出, 去除无用字段和qwContent值中的HTML标签
-    def pro(self, raw: Dict[str, str]):
-        res_dict, new = {}, {}
+    def detail_pro(self, raw: Dict[str, str]):
+        new = {}
         for k, v in raw.items():
             if v and k != "s5":
                 if k == "qwContent":
                     for s, repl in self.repl_dict.items():
                         v = re.sub(s, repl, v)
                 new[k] = v
-        res_dict[raw["s5"]] = new
-        return res_dict
+        return {raw["s5"]: new}
 
     # LV2条件分流：使用二分法递归产生日期范围, 直至范围内文书总数不超过1k
     def generate_date_queries(self, query: Dict[str, str], start_date: dt, end_date: dt):
@@ -387,10 +386,9 @@ class WenShuCrawler:
 
     # Main Proc: Crawl docId list
     def proc_doc_list_crawler(self, proc_query_list: List[List[Any]], proc_total_docs: int, pid: int = 0, queue=None):
-        # Patterns: Σ$query_total_docs == $proc_total_docs, no replications in api data
+        # Theoretical Patterns: Σ$query_total_docs == $proc_total_docs
         start_t, total_cnt, repl_cnt, proc_doc_indices = time.perf_counter(), 0, 0, []
         for idx, (qid, query, query_total_docs) in enumerate(proc_query_list):
-            # query_start_t = time.perf_counter()
             query_doc_indices = None
             for crawl_unit in self.crawl_units:
                 try:
@@ -403,15 +401,6 @@ class WenShuCrawler:
             proc_doc_indices += query_doc_indices
             if queue is not None:
                 queue.put(query_doc_indices)
-            # total_cnt += query_total_docs
-            # repl_cnt = total_cnt - len(proc_doc_indices)
-            # rest_cnt = proc_total_docs - total_cnt
-            # speed = query_total_docs / (time.perf_counter() - query_start_t)
-            # print("[{}] [{}/{}][{}-{}] Cur-Total: {}/{}/{}/{}, Repl {} || Time: {:.1f}s/{:.1f}s, Speed {:.1f}/s, ETA {}"
-            #       .format(pid, idx + 1, len(proc_query_list), qid, query,
-            #               query_total_docs, len(proc_doc_indices), total_cnt, proc_total_docs, repl_cnt,
-            #               time.perf_counter() - query_start_t, time.perf_counter() - start_t,
-            #               speed, "{:.1f}s".format(rest_cnt / speed) if speed > 0 else "---"))
         # print("\nEND Proc {}, {} queries, {} docs".format(pid, len(proc_query_list), len(proc_doc_indices)))
         return proc_doc_indices
 
@@ -424,12 +413,12 @@ class WenShuCrawler:
                 if queue is not None:
                     queue.put(None)
                 continue
-            pro_data = self.pro(detail_data)
+            pro_data = self.detail_pro(detail_data)
             proc_doc_dict.update(pro_data)
             if queue is not None:
                 queue.put(pro_data)
-        if self.do_split:
-            data_path = self.args.proc_result_path.format(pid)
+        if self.do_split:  # do_split=True则在进程执行结束时保存结果
+            data_path = self.args.split_result_path.format(pid)
             dump_data(proc_doc_dict, data_path)
             print("\nEND Proc {}, Saved {} Docs to {}".format(pid, len(proc_doc_dict), data_path))
         else:
@@ -439,8 +428,8 @@ class WenShuCrawler:
     # Merge Split Results
     def merge_results(self, prev_num_workers, num_docs):
         doc_dict = {}
-        for pid in trange(prev_num_workers, desc="Load Split Results"):
-            split_data = load_data(self.args.proc_result_path.format(pid))
+        for pid in trange(prev_num_workers, desc="Merge Split Results"):
+            split_data = load_data(self.args.split_result_path.format(pid))
             doc_dict.update(split_data)
         print("GOT {}/{} Doc Details, Lost {}".format(len(doc_dict), num_docs, num_docs - len(doc_dict)))
         dump_data(doc_dict, self.args.result_path)
@@ -457,7 +446,7 @@ class WenShuCrawler:
         if self.use_cache and op.exists(self.args.doc_index_path):
             doc_index_list = load_data(self.args.doc_index_path)
         else:
-            # 生成组合条件, 并进行三轮粗粒度调度
+            # 生成组合条件, 并进行4轮粗粒度调度
             # sample query: {"s2": "北京市高级人民法院", "cprq": "2021-05-01 TO 2021-06-01"}
             if self.use_cache and op.exists(self.args.query_length_path):
                 length_list_2 = load_data(self.args.query_length_path)
@@ -477,6 +466,7 @@ class WenShuCrawler:
                     proc_data = q.get()
                     length_list += proc_data
                 print("Counted {} courts".format(len(length_list)))
+                # Counted 3531 courts in Stage I, 2022-05-31 21:00
                 # Stage I: Split
                 length_list_1, length_list_2 = [], []
                 for query, total_count in length_list:
@@ -504,7 +494,7 @@ class WenShuCrawler:
                       format(sum_query_count, total_count, total_count - sum_query_count,
                              len(length_list_1), len(length_list), len(length_list_2)))
                 dump_data(length_list_2, self.args.query_length_path)
-                # GOT 3063303, Lost 2311/3065614, Split Queries 848/3531 -> 6540 in Stage II, 2022-05-31 21:00
+                # GOT 3063303/3065614, Lost 2311, Split Queries 848/3531 -> 6540 in Stage II, 2022-05-31 21:00
 
             # Stage III: Schedule + Multi-Proc （爬取文书列表）
             # 数据重复性: 1）s2字段本身存在值重复, 如"新绛县人民法院"和"绛县人民法院";

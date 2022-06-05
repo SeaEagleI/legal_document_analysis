@@ -312,7 +312,9 @@ class WenShuCrawler:
         return length_list
 
     # Coarse-grained Scheduler to balance payload among processes
-    # 性能：在proc_len上实现了较好的平衡, 但未考虑query数的影响, 靠后分配的proc的query数会非常多; 较适合本文这种query对爬取时间影响不大的情况
+    # 性能: 1) 考虑了query长度对进程执行时间的影响, 在每个进程包含的query总长度（即proc_len）上实现了较好的平衡;
+    #       2) 未考虑query数量对进程执行时间的影响, 靠后分配的proc的query数量会显著增加;
+    #       3) 综合来看, 该预调度算法已经在低复杂度条件下实现了效果相当不错的负载均衡, 适合本项目这种query数量对总爬取时间影响不大的情况。
     def scheduler(self, length_list: List[List[Any]]):
         total_count = self.update_total_count({})
         query_list = [x for x, _ in length_list]
@@ -446,13 +448,14 @@ class WenShuCrawler:
         if self.use_cache and op.exists(self.args.doc_index_path):
             doc_index_list = load_data(self.args.doc_index_path)
         else:
-            # 生成组合条件, 并进行4轮粗粒度调度
+            # 使用分流机制生成组合条件, 获得文书网上的所有行政诉讼文书
+            # 共进行4轮请求, 每轮都首先进行粗粒度预调度为每个进程分配query, 然后调用multiprocessing模块实现多进程爬取
             # sample query: {"s2": "北京市高级人民法院", "cprq": "2021-05-01 TO 2021-06-01"}
             if self.use_cache and op.exists(self.args.query_length_path):
                 length_list_2 = load_data(self.args.query_length_path)
             else:
                 # TODO LIST: 拆分损失评估, 为何会造成76k的拆分损失，能否弄到一个域外数据？从而改进拆分减小损失？
-                # Stage I: Schedule + Multi-Proc
+                # Stage I: Schedule + Multi-Proc （统计所有LV1 Query的长度）
                 length_list = []
                 self.num_queries = len(court_names)
                 self.proc_unit = math.ceil(self.num_queries / self.num_workers)
@@ -467,7 +470,7 @@ class WenShuCrawler:
                     length_list += proc_data
                 print("Counted {} courts".format(len(length_list)))
                 # Counted 3531 courts in Stage I, 2022-05-31 21:00
-                # Stage I: Split
+                # Stage I: Split （找出所有长度超出1k的LV1 Query）
                 length_list_1, length_list_2 = [], []
                 for query, total_count in length_list:
                     if total_count <= self.crawl_limit:
@@ -476,7 +479,7 @@ class WenShuCrawler:
                         continue
                     else:
                         length_list_1 += [[query, total_count]]
-                # Stage II: Schedule + Multi-Proc
+                # Stage II: Schedule + Multi-Proc （对长度超出1k的LV1 Query使用LV2+条件进一步分流，直至每个query结果长度≤1k）
                 self.num_queries = len(length_list_1)
                 schedule_list, proc_lens = self.scheduler(length_list_1)
                 print(f"[MP Stage II] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
@@ -497,8 +500,8 @@ class WenShuCrawler:
                 # GOT 3063303/3065614, Lost 2311, Split Queries 848/3531 -> 6540 in Stage II, 2022-05-31 21:00
 
             # Stage III: Schedule + Multi-Proc （爬取文书列表）
-            # 数据重复性: 1）s2字段本身存在值重复, 如"新绛县人民法院"和"绛县人民法院";
-            #           2）同一文书同时出现在多个法院的检索结果中（文书6581ace6b24749cf9ffdad1201855f28同时出现在"洪洞县人民法院"和"新绛县人民法院"的结果中）
+            # 数据重复性: 1) s2字段本身存在值重复, 如"新绛县人民法院"和"绛县人民法院";
+            #            2) 同一文书同时出现在多个法院的检索结果中（文书6581ace6b24749cf9ffdad1201855f28同时出现在"洪洞县人民法院"和"新绛县人民法院"的结果中）。
             self.num_queries = len(length_list_2)
             schedule_list, proc_lens = self.scheduler(length_list_2)
             print(f"[MP Stage III] Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
@@ -526,9 +529,12 @@ class WenShuCrawler:
                 return self.merge_results(len(split_files), self.num_docs)
 
         # Stage IV: Schedule + Multi-Proc （爬取文书正文）
-        # 防止结果太大存不下, 采用分块存储, 最后再合并
-        # 可先在本地重置headers, 然后在服务器上运行（服务器上无UI, 不能开selenium登录; 但可以开到80个进程, 速度≈300/s, 约2.9h爬完3M条）
-        # 部分文件无法获取: 获取极少数文件的正文时会持续返回InvalidChunkLength Error, 比如文件"1c9e6f351f8a4d9ca96dab3300909564"
+        # 运行说明: 
+        # 1) 远程运行: 目前手机端文书网反爬只检查cookie, 不检查ip, 故可先在本地重置headers, 然后在服务器上运行（服务器上无UI, 不能开selenium登录）;
+        # 2) 运行时长: Stage IV在服务器上可以开到80个进程, 此时速度最快, 约300/s, 2.9h左右即可爬完3M条;
+        # 2) 分块存储: 防止结果太大存不下, 采用分块存储, 最后再合并;
+        # 3) 错误修复: 获取极少数文书的正文时会持续返回InvalidChunkLength Error, 比如文书"1c9e6f351f8a4d9ca96dab3300909564", 
+        #             已引入后期增补机制0对上述第一波爬取时出现Error的文书进行重新爬取或替换, 参见supplement.py。
         self.proc_unit = math.ceil(self.num_docs / self.num_workers)
         print(f"[MP Stage IV] Workers: {self.num_workers}, Unit: {self.proc_unit}, Docs: {self.num_docs}")
         q = multiprocessing.Queue()
@@ -536,7 +542,7 @@ class WenShuCrawler:
             proc_doc_indices = doc_index_list[self.proc_unit * pid: self.proc_unit * (pid + 1)]
             p = multiprocessing.Process(target=self.proc_detail_crawler, args=(proc_doc_indices, pid, q))
             p.start()
-        if self.do_split:
+        if self.do_split:  # 默认分块存储
             for _ in trange(self.num_docs, desc="Crawl Doc Details"):
                 __ = q.get()
             return None

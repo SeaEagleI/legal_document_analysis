@@ -53,16 +53,17 @@ class WenShuCrawler:
         self.verification_token = self.cracker.rand_str()
         # Crawler Part: query config
         self.base_query = {"key": "s8", "value": "04"}  # 行政诉讼案件
-        self.desc2key = {  # 候选分流字段, 用于进行值统计
-            "case_type": "s8",  # 基本条件 （key0）
-            "court_name": "s2",  # LV1字段 （key1）
-            "year": "s42",  # LV2辅助字段: 轻微不全, 无重复, 分布较均衡
-            "date": "cprq",  # LV2字段: 不支持值统计 （key2）
-            "doc_type": "s6",  # LV3字段: 全, 无重复, 分布严重不均 （key3）
-            "case_no": "s7",  # LV4字段: 返回结果数上限为35 （key4）
-            # "keyword": "s45",  # 未使用: 严重不全, 重复较多
-            # "province": "s33",  # 未使用
-            # "court_level": "s4",  # 未使用
+        self.desc2key = {  # 候选字段:  分流使用情况   计数使用情况         其他说明
+            "case_type": "s8",      # 基本条件key0   I类计数字段
+            "court_name": "s2",     # LV1字段key1  II类计数字段      值太多, 需挨个统计
+            "year": "s42",          # LV2辅助字段    I类计数字段  轻微不全, 无重复, 分布较均衡
+            "date": "cprq",         # LV2字段key2     未使用           不支持值统计
+            "doc_type": "s6",       # LV3字段key3   I类计数字段    全, 无重复, 分布严重不均
+            "case_no": "s7",        # LV4字段key4     未使用         值太多, 需挨个统计
+            "keyword": "s45",         # 未使用      I类计数字段       严重不全, 重复较多
+            "province": "s33",        # 未使用      I类计数字段
+            "court_level": "s4",      # 未使用      I类计数字段
+            "charge_type": "s11",     # 未使用      I类计数字段
         }
         self.key0 = "s8"  # case_type
         self.key1 = "s2"  # court_name
@@ -237,15 +238,15 @@ class WenShuCrawler:
         print(f"\nError: {doc_id}\t{error}")
         return None
 
-    # 对给定条件组合下指定字段进行值计数 (年份/关键字/文书类型)
-    def update_field_count(self, add_query: Dict[str, str], count_field: str):
+    # 对给定条件组合下指定字段进行值计数 (年份、关键字、文书类型等)
+    # 注: 该型值统计api返回结果数上限为35, 即值情况大于35的返回结果不全
+    def update_field_count(self, add_query: Dict[str, str], count_field: str, use_base: bool = True):
         key = self.desc2key[count_field]
-        query_text = str([self.base_query] + [{"key": k, "value": v} for k, v in add_query.items()])
+        queries = ([self.base_query] if use_base else []) + [{"key": k, "value": v} for k, v in add_query.items()]
         params = {
             'pageId': self.pageId,
-            's2': '最高人民法院',
             'groupFields': key,  # 's42' or 's45;s11;s4;s33;s42;s8;s6;s44'
-            'queryCondition': query_text,
+            'queryCondition': str(queries),
             'cfg': 'com.lawyee.judge.dc.parse.dto.SearchDataDsoDTO@leftDataItem',
             '__RequestVerificationToken': self.verification_token,
         }
@@ -255,9 +256,9 @@ class WenShuCrawler:
         return count_dict
 
     # 统计给定条件组合下的结果总数
-    def update_total_count(self, add_query: Dict[str, str]):
-        query_text = str([self.base_query] + [{"key": k, "value": v} for k, v in add_query.items()])
-        data = self.once_doc_list_crawler(query_text)
+    def update_total_count(self, add_query: Dict[str, str], use_base: bool = True):
+        queries = ([self.base_query] if use_base else []) + [{"key": k, "value": v} for k, v in add_query.items()]
+        data = self.once_doc_list_crawler(str(queries))
         return data["queryResult"]["resultCount"]
 
     # 预处理: 将正文爬虫结果中的docId抽出, 去除无用字段和qwContent值中的HTML标签
@@ -284,7 +285,7 @@ class WenShuCrawler:
             if interval:
                 mid_date = start_date + timedelta(interval // 2)
                 return self.generate_date_queries(query, start_date, mid_date) \
-                    + self.generate_date_queries(query, mid_date + timedelta(1), end_date)
+                       + self.generate_date_queries(query, mid_date + timedelta(1), end_date)
             else:
                 # 引入第三层及以上条件, 解决单法院单日文书数超过1k的爬取问题
                 return self.generate_upper_queries(new_query, total_count)
@@ -357,11 +358,11 @@ class WenShuCrawler:
         return schedule_list, proc_lens
 
     # Main Proc: Counter
-    def proc_counter(self, court_name_list: List[str], pid: int = 0, queue=None):
+    def proc_counter(self, court_name_list: List[str], use_base: bool = True, pid: int = 0, queue=None):
         proc_length_list = []
         for court_name in court_name_list:
             query = {self.key1: court_name}
-            total_count = self.update_total_count(query)
+            total_count = self.update_total_count(query, use_base)
             proc_length_list += [[query, total_count]]
             if queue is not None:
                 queue.put([[query, total_count]])
@@ -437,13 +438,53 @@ class WenShuCrawler:
         dump_data(doc_dict, self.args.result_path)
         return doc_dict  # 返回结果
 
+    # 对所有主要字段进行值统计 (年份/关键字/文书类型)
+    def run_stats_crawler(self):
+        save_path = op.join(args.count_dir, "{}_count.json")
+        # 使用左菜单进行所有文书的值统计, 返回按count降序排列的前35个结果
+        fields = {
+            "court_level": "s4",    # I类计数字段    值替换
+            "doc_type": "s6",       # I类计数字段    值替换
+            "case_type": "s8",      # I类计数字段    值替换    划分s9/s10 ×
+            "charge_type": "s11",   # I类计数字段    值替换    划分s12/s13
+            "year": "s42",          # I类计数字段  前35个截断
+            "keyword": "s45",       # I类计数字段  前35个截断
+            "province": "s33",      # I类计数字段             划分s2
+        }
+        id2value = load_data(args.id2value_path)
+        for desc, key in fields.items():
+            value_counts = self.update_field_count({}, count_field=desc, use_base=False)
+            if key in id2value:
+                id2name = id2value[key]
+                value_counts = {id2name[k]: v for k, v in value_counts.items() if k in id2name}
+            dump_data(value_counts, save_path.format(desc))
+
+        # 使用DocList对所有文书的s2进行值统计
+        court_names = [court["name"] for court in self.court_list_crawler()]
+        length_dict = {}
+        self.num_queries = len(court_names)
+        self.proc_unit = math.ceil(self.num_queries / self.num_workers)
+        print(f"Workers: {self.num_workers}, Unit: {self.proc_unit}, Queries: {self.num_queries}")
+        q = multiprocessing.Queue()
+        for pid in range(self.num_workers):
+            proc_court_names = court_names[self.proc_unit * pid: self.proc_unit * (pid + 1)]
+            p = multiprocessing.Process(target=self.proc_counter, args=(proc_court_names, False, pid, q))
+            p.start()
+        for _ in trange(self.num_queries, desc="Count Cases by Court"):
+            proc_data = q.get()
+            proc_data = {query["s2"]: count for query, count in proc_data}
+            length_dict.update(proc_data)
+        length_dict = dict(sorted(list(length_dict.items()), key=lambda x: x[1], reverse=True))
+        print("Counted {} courts".format(len(length_dict)))
+        dump_data(length_dict, save_path.format("court"))
+
     # Multi-Process Controller
-    def run_crawler(self):
+    def run_doc_crawler(self):
         # 爬取法院列表
         court_names = [court["name"] for court in self.court_list_crawler()]
         # 爬取文书信息
         if self.use_cache and op.exists(self.args.result_path):
-                return load_data(self.args.result_path)
+            return load_data(self.args.result_path)
         doc_index_list = []
         if self.use_cache and op.exists(self.args.doc_index_path):
             doc_index_list = load_data(self.args.doc_index_path)
@@ -463,7 +504,7 @@ class WenShuCrawler:
                 q = multiprocessing.Queue()
                 for pid in range(self.num_workers):
                     proc_court_names = court_names[self.proc_unit * pid: self.proc_unit * (pid + 1)]
-                    p = multiprocessing.Process(target=self.proc_counter, args=(proc_court_names, pid, q))
+                    p = multiprocessing.Process(target=self.proc_counter, args=(proc_court_names, True, pid, q))
                     p.start()
                 for _ in trange(self.num_queries, desc="Count LV1 Queries"):
                     proc_data = q.get()
@@ -561,4 +602,5 @@ class WenShuCrawler:
 if __name__ == '__main__':
     args = Config()
     crawler = WenShuCrawler(args)
-    crawler.run_crawler()
+    # crawler.run_doc_crawler()
+    crawler.run_stats_crawler()

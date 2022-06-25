@@ -17,7 +17,7 @@ class Config:
         # General Config for Crawler
         self.use_cache = True
         self.do_split = True
-        self.num_workers = 80
+        self.num_workers = 20
 
         # Common Files
         # directories
@@ -27,6 +27,7 @@ class Config:
         self.split_dir = op.join(self.data_dir, "split")
         self.sup_dir = op.join(self.data_dir, "supplement")
         self.pro_dir = op.join(self.data_dir, "processed")
+        self.count_dir = op.join(self.data_dir, "count")
         # driver file
         self.driver_path = op.join(self.driver_dir, "chromedriver.exe")
         # cache files
@@ -41,6 +42,9 @@ class Config:
         self.sup_result_path = op.join(self.sup_dir, "detail_{}.json")  # Stage V
         self.result_path = op.join(self.data_dir, "detail_info.json")  # Stage IV
         self.processed_path = op.join(self.pro_dir, "processed.json")  # Stage VI
+        # auxiliary files
+        self.ay_path = op.join(self.data_dir, "ay.json")
+        self.id2value_path = op.join(self.data_dir, "id2value.json")
 
         # 文件检查和预创建（不检查driver文件夹）
         folders = [v for k, v in self.__dict__.items() if k.endswith("_dir") and "driver" not in k]

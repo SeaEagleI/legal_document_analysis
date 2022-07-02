@@ -4,7 +4,6 @@
 
 ## 数据爬取
 - 目前爬取了2989757条文书正文数据，json文件大小约21.5G（截至2022-06-01 00:00）
-- 最新代码和数据都在服务器上
 - 字段列表、含义及值集合：[wenshulist1.js](data/wenshulist1.js)
 - 前100个正文数据样本：[sample_100.json](data/sample_100.json)
 - 截至2022年6月25日所有1.3亿文书的元数据：[count](data/count)

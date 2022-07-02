@@ -1,11 +1,11 @@
-# 文书网数据挖掘与分析
+# 法律文书数据挖掘与分析
 
 抓取裁判文书网部分文书，并进行特征分析和罪名预测
 
 ## 数据爬取
 - 目前爬取了2989757条文书正文数据，json文件大小约21.5G（截至2022-06-01 00:00）
 - 最新代码和数据都在服务器上
-- 字段解析报告：https://a0o09b6l6h.feishu.cn/docs/doccntph0MBUMJCqN4odgof45kd
+- 字段解析报告：见[wenshulist1.js](data/wenshulist1.js)和https://a0o09b6l6h.feishu.cn/docs/doccntph0MBUMJCqN4odgof45kd
 
 ## 数据预处理
 - 通过编写数据库接口，已经实现了本地低内存条件下的高效数据访问
